@@ -143,23 +143,34 @@ export const NoticeCard: React.FC<NoticeCardProps> = ({ notice, format }) => {
     }
   };
 
+  // Tamaño del importe auto-ajustado a su longitud: un total de 7 cifras a
+  // tamaño fijo se salía de la ficha (o se solapaba) en la imagen exportada.
+  // Nunca se recorta un dato del cliente con «…»: mejor letra algo menor o
+  // salto de línea que un aviso con el importe o el nombre a medias.
+  const fitAmount = (base: number) => {
+    const len = totalAmount.length;
+    if (len <= 11) return base;
+    if (len <= 13) return Math.round(base * 0.88);
+    if (len <= 15) return Math.round(base * 0.78);
+    return Math.round(base * 0.68);
+  };
+
   // ---- Cabecera: título del resultado ARRIBA DEL TODO, luego el cliente ----
-  const ellip: React.CSSProperties = { whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' };
   const Header = () => (
     <>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 10 }}>
         <div style={{ minWidth: 0, flex: 1 }}>
           {single && (
-            <div style={{ fontSize: 11, fontWeight: 600, letterSpacing: '0.07em', color: NAVY, textTransform: 'uppercase', ...ellip }}>Resultado liquidación</div>
+            <div style={{ fontSize: 11, fontWeight: 600, letterSpacing: '0.07em', color: NAVY, textTransform: 'uppercase' }}>Resultado liquidación</div>
           )}
-          <div style={{ fontFamily: SERIF, fontWeight: 700, fontSize: 19, color: NAVY, lineHeight: 1.15, marginTop: single ? 1 : 0, ...ellip }}>{taxBig}</div>
-          <div style={{ fontSize: 12, color: LABEL, marginTop: 3, ...ellip }}>{periodoText}</div>
+          <div style={{ fontFamily: SERIF, fontWeight: 700, fontSize: 19, color: NAVY, lineHeight: 1.2, marginTop: single ? 1 : 0, overflowWrap: 'break-word' }}>{taxBig}</div>
+          <div style={{ fontSize: 12, color: LABEL, marginTop: 3 }}>{periodoText}</div>
         </div>
         <span style={{ background: NAVY, color: '#fff', fontSize: 11, fontWeight: 600, padding: '3px 11px', borderRadius: 999, whiteSpace: 'nowrap', flexShrink: 0 }}>{chip}</span>
       </div>
       <div style={{ marginTop: 12, paddingTop: 12, borderTop: `1px solid ${ROW}` }}>
         <div style={{ fontFamily: SERIF, fontSize: 16, color: INK, lineHeight: 1.3, wordBreak: 'break-word' }}>{notice.cliente_nombre}</div>
-        <div style={{ fontFamily: MONO, fontSize: 12, color: LABEL, marginTop: 2, ...ellip }}>NIF {notice.cliente_nif}</div>
+        <div style={{ fontFamily: MONO, fontSize: 12, color: LABEL, marginTop: 2, overflowWrap: 'break-word' }}>NIF {notice.cliente_nif}</div>
       </div>
     </>
   );
@@ -168,7 +179,7 @@ export const NoticeCard: React.FC<NoticeCardProps> = ({ notice, format }) => {
     <div style={{ fontSize: 13 }}>
       {notice.notices.map((tax) => (
         <div key={tax.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 10, padding: '6px 0', borderTop: `1px solid ${ROW}` }}>
-          <span style={{ color: INK, whiteSpace: 'nowrap' }}>
+          <span style={{ color: INK, minWidth: 0, overflowWrap: 'break-word' }}>
             <span style={{ fontWeight: 700 }}>Modelo {tax.modelo}</span>
             <span style={{ color: LABEL }}> · {shortTaxName(tax.modelo, tax.modelo_nombre)}</span>
           </span>
@@ -180,7 +191,7 @@ export const NoticeCard: React.FC<NoticeCardProps> = ({ notice, format }) => {
 
   const CuentaRow = () =>
     res.iban && notice.iban ? (
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10, padding: '7px 0', borderTop: `1px solid ${ROW}`, fontSize: 13 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10, padding: '7px 0', borderTop: `1px solid ${ROW}`, fontSize: 13, flexWrap: 'wrap' }}>
         <span style={{ color: LABEL, whiteSpace: 'nowrap' }}>Cuenta de cargo</span>
         <span style={{ fontFamily: MONO, color: '#5C564A', letterSpacing: '0.03em', whiteSpace: 'nowrap' }}>{maskIban(notice.iban)}</span>
       </div>
@@ -188,7 +199,7 @@ export const NoticeCard: React.FC<NoticeCardProps> = ({ notice, format }) => {
 
   const FechaRow = () =>
     res.dateLabel && chargeDate ? (
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10, padding: '7px 0', borderTop: `1px solid ${ROW}` }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10, padding: '7px 0', borderTop: `1px solid ${ROW}`, flexWrap: 'wrap' }}>
         <span style={{ display: 'flex', alignItems: 'center', gap: 7, fontSize: 12.5, color: LABEL, whiteSpace: 'nowrap' }}>
           <Calendar size={15} color={NAVY} style={{ flexShrink: 0 }} />
           {res.dateLabel}
@@ -228,7 +239,7 @@ export const NoticeCard: React.FC<NoticeCardProps> = ({ notice, format }) => {
           </div>
           <div style={{ fontSize: 12.5, color: res.c, marginTop: 3, lineHeight: 1.4 }}>{res.shortMsg}</div>
         </div>
-        <div style={{ fontFamily: SERIF, fontSize: 26, color: res.c, whiteSpace: 'nowrap' }}>{totalAmount}</div>
+        <div style={{ fontFamily: SERIF, fontSize: fitAmount(26), color: res.c, whiteSpace: 'nowrap', flexShrink: 0 }}>{totalAmount}</div>
       </div>
       {!single && <Desglose />}
       <CuentaRow />
@@ -241,8 +252,8 @@ export const NoticeCard: React.FC<NoticeCardProps> = ({ notice, format }) => {
     <>
       {!single && <div style={{ marginTop: 12 }}><Desglose /></div>}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '10px 0', borderTop: `2px solid ${NAVY}`, marginTop: single ? 12 : 5 }}>
-        <span style={{ fontSize: 13, fontWeight: 700, color: NAVY, letterSpacing: single ? 0 : '0.04em', whiteSpace: 'nowrap' }}>{single ? amountLabel : 'TOTAL'}</span>
-        <span style={{ fontFamily: SERIF, fontSize: 25, color: NAVY, whiteSpace: 'nowrap' }}>{totalAmount}</span>
+        <span style={{ fontSize: 13, fontWeight: 700, color: NAVY, letterSpacing: single ? 0 : '0.04em' }}>{single ? amountLabel : 'TOTAL'}</span>
+        <span style={{ fontFamily: SERIF, fontSize: fitAmount(25), color: NAVY, whiteSpace: 'nowrap', flexShrink: 0 }}>{totalAmount}</span>
       </div>
       <div style={{ margin: '8px 0 2px' }}><StatusLine /></div>
       <CuentaRow />
@@ -255,7 +266,7 @@ export const NoticeCard: React.FC<NoticeCardProps> = ({ notice, format }) => {
     <>
       <div style={{ textAlign: 'center', padding: '14px 0 10px' }}>
         <div style={{ fontSize: 12, color: LABEL, letterSpacing: '0.04em' }}>{amountLabel}</div>
-        <div style={{ fontFamily: SERIF, fontSize: 36, color: NAVY, lineHeight: 1.05, margin: '5px 0 9px', whiteSpace: 'nowrap' }}>{totalAmount}</div>
+        <div style={{ fontFamily: SERIF, fontSize: fitAmount(36), color: NAVY, lineHeight: 1.05, margin: '5px 0 9px', whiteSpace: 'nowrap' }}>{totalAmount}</div>
         <span style={{ display: 'inline-flex', alignItems: 'center', gap: 7, color: res.c, fontSize: 14, fontWeight: 700, background: res.bg, border: `1px solid ${res.bd}`, padding: '4px 12px', borderRadius: 999 }}>
           <span style={{ width: 8, height: 8, borderRadius: '50%', background: res.dot }} />
           {res.label}
@@ -321,7 +332,7 @@ export const NoticeCard: React.FC<NoticeCardProps> = ({ notice, format }) => {
       <div className="flex gap-3 mt-4 w-full justify-center">
         <button
           onClick={handleCopy}
-          className="flex items-center gap-1.5 px-4 py-2 text-xs font-bold rounded-lg text-white bg-slate-800 hover:bg-slate-900 transition-colors shadow-sm"
+          className="flex items-center gap-2 px-4 py-2.5 text-sm font-bold rounded-lg text-white bg-slate-800 hover:bg-slate-900 transition-colors shadow-sm"
           id={`btn-copy-img-${notice.cliente_nif}`}
         >
           {copied ? (

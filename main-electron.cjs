@@ -1,4 +1,4 @@
-const { app, BrowserWindow, dialog } = require('electron');
+const { app, BrowserWindow, dialog, shell } = require('electron');
 const path = require('path');
 const http = require('http');
 const { autoUpdater } = require('electron-updater');
@@ -41,8 +41,10 @@ function startExpressServer() {
 
 function createWindow() {
   mainWindow = new BrowserWindow({
-    width: 1200,
-    height: 800,
+    width: 1280,
+    height: 860,
+    minWidth: 1000,
+    minHeight: 700,
     title: 'Generador de Avisos Fiscales',
     icon: path.join(__dirname, 'assets', 'app.ico'),
     autoHideMenuBar: true,
@@ -50,6 +52,21 @@ function createWindow() {
       nodeIntegration: false,
       contextIsolation: true,
     },
+  });
+
+  // Los enlaces externos (p. ej. "crear API key en Google AI Studio") deben
+  // abrirse en el navegador del sistema. Sin esto, target="_blank" abría una
+  // ventana Electron vacía y el usuario no llegaba nunca a la página.
+  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+    if (url.startsWith('https://') || url.startsWith('http://')) {
+      // Las capturas guardadas se sirven desde el propio servidor local:
+      // esas sí se abren en una ventana de la app.
+      if (!url.startsWith('http://localhost:3000')) {
+        shell.openExternal(url);
+        return { action: 'deny' };
+      }
+    }
+    return { action: 'allow' };
   });
 
   const localServerUrl = 'http://localhost:3000';

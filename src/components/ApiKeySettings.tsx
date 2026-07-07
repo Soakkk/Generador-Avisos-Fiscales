@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Settings, X, Check, KeyRound, ExternalLink } from 'lucide-react';
+import { Settings, X, Check, KeyRound, ExternalLink, FlaskConical, Loader2 } from 'lucide-react';
 
 interface ApiKeySettingsProps {
   onConfigured?: () => void;
@@ -12,6 +12,28 @@ export const ApiKeySettings: React.FC<ApiKeySettingsProps> = ({ onConfigured }) 
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const [saved, setSaved] = useState(false);
+  const [testing, setTesting] = useState(false);
+  const [testResult, setTestResult] = useState<{ ok: boolean; message: string } | null>(null);
+
+  // Comprueba contra Gemini que la clave guardada funciona de verdad
+  // (no solo que haya "algo" guardado).
+  const handleTest = async () => {
+    setTesting(true);
+    setTestResult(null);
+    try {
+      const res = await fetch('/api/config/test', { method: 'POST' });
+      const data = await res.json();
+      if (res.ok && data.ok) {
+        setTestResult({ ok: true, message: 'La clave funciona correctamente. Ya puede analizar capturas.' });
+      } else {
+        setTestResult({ ok: false, message: data.error || 'La clave no ha respondido correctamente.' });
+      }
+    } catch {
+      setTestResult({ ok: false, message: 'No se pudo contactar con el servidor local.' });
+    } finally {
+      setTesting(false);
+    }
+  };
 
   const refreshStatus = async () => {
     try {
@@ -93,16 +115,25 @@ export const ApiKeySettings: React.FC<ApiKeySettingsProps> = ({ onConfigured }) 
 
             <p className="text-xs text-slate-500 leading-relaxed mb-3">
               Esta clave se guarda únicamente en este ordenador (nunca se sube a internet ni a GitHub) y permite
-              que la app lea las capturas de pantalla con IA. Consíguela gratis en{' '}
-              <a
-                href="https://aistudio.google.com/apikey"
-                target="_blank"
-                rel="noreferrer"
-                className="text-slate-800 underline inline-flex items-center gap-0.5"
-              >
-                Google AI Studio <ExternalLink className="w-3 h-3" />
-              </a>.
+              que la app lea las capturas de pantalla con IA.
             </p>
+
+            <ol className="text-xs text-slate-600 leading-relaxed mb-3 list-decimal pl-4 space-y-1">
+              <li>Pulse el botón de abajo: se abrirá Google AI Studio en su navegador.</li>
+              <li>Inicie sesión con su cuenta de Google y pulse <b>«Create API key»</b>.</li>
+              <li>Copie la clave y péguela aquí. Es gratis.</li>
+            </ol>
+
+            <a
+              href="https://aistudio.google.com/apikey"
+              target="_blank"
+              rel="noreferrer"
+              className="w-full flex items-center justify-center gap-2 px-4 py-2.5 mb-4 text-sm font-bold text-white bg-blue-600 hover:bg-blue-700 rounded-lg transition-all shadow-sm"
+              id="btn-open-aistudio"
+            >
+              <ExternalLink className="w-4 h-4" />
+              <span>Crear una clave gratis en Google AI Studio</span>
+            </a>
 
             <div className="mb-2 text-[11px] font-semibold text-slate-500">
               Estado actual:{' '}
@@ -125,21 +156,40 @@ export const ApiKeySettings: React.FC<ApiKeySettingsProps> = ({ onConfigured }) 
 
             {error && <p className="text-xs text-rose-600 mb-2">{error}</p>}
 
-            <button
-              onClick={handleSave}
-              disabled={saving}
-              className="w-full flex items-center justify-center gap-1.5 px-4 py-2 text-xs font-bold text-white bg-slate-800 hover:bg-slate-900 rounded-lg transition-all disabled:opacity-50"
-              id="btn-save-api-key"
-            >
-              {saved ? (
-                <>
-                  <Check className="w-3.5 h-3.5" />
-                  <span>¡Guardada!</span>
-                </>
-              ) : (
-                <span>{saving ? 'Guardando…' : 'Guardar clave'}</span>
-              )}
-            </button>
+            <div className="flex gap-2">
+              <button
+                onClick={handleSave}
+                disabled={saving}
+                className="flex-1 flex items-center justify-center gap-1.5 px-4 py-2 text-xs font-bold text-white bg-slate-800 hover:bg-slate-900 rounded-lg transition-all disabled:opacity-50"
+                id="btn-save-api-key"
+              >
+                {saved ? (
+                  <>
+                    <Check className="w-3.5 h-3.5" />
+                    <span>¡Guardada!</span>
+                  </>
+                ) : (
+                  <span>{saving ? 'Guardando…' : 'Guardar clave'}</span>
+                )}
+              </button>
+
+              <button
+                onClick={handleTest}
+                disabled={testing || !hasApiKey}
+                title={hasApiKey ? 'Hace una llamada mínima a Gemini para confirmar que la clave guardada funciona' : 'Guarde primero una clave'}
+                className="flex items-center justify-center gap-1.5 px-4 py-2 text-xs font-bold rounded-lg border border-slate-200 text-slate-700 bg-white hover:bg-slate-50 transition-all disabled:opacity-50"
+                id="btn-test-api-key"
+              >
+                {testing ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <FlaskConical className="w-3.5 h-3.5" />}
+                <span>{testing ? 'Probando…' : 'Probar clave'}</span>
+              </button>
+            </div>
+
+            {testResult && (
+              <p className={`text-xs mt-2 leading-relaxed ${testResult.ok ? 'text-emerald-600' : 'text-rose-600'}`}>
+                {testResult.ok ? '✓ ' : '✖ '}{testResult.message}
+              </p>
+            )}
           </div>
         </div>
       )}

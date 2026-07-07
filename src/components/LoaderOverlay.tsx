@@ -12,6 +12,8 @@ const STEPS = [
   "Conectando de forma segura con el servidor...",
   "Gemini está analizando la estructura del modelo fiscal...",
   "Extrayendo NIF, nombre, periodo e importe tributario...",
+  "Verificando los datos con una segunda lectura...",
+  "Comprobando IBAN y NIF (dígitos de control)...",
   "Calculando plazos oficiales de la AEAT...",
   "Generando aviso personalizado..."
 ];

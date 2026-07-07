@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { TaxNotice, JointNotice, calculateAEATDeadlines, formatDateSpanish } from './types';
+import { TaxNotice, JointNotice, NoticeVerification, calculateAEATDeadlines, formatDateSpanish } from './types';
+import { verifyNoticeFields, normalizeNifKey } from './validation';
 import { LoaderOverlay } from './components/LoaderOverlay';
 import { NoticeEditor } from './components/NoticeEditor';
 import { NoticeCard, CardFormat } from './components/NoticeCard';
@@ -23,6 +24,79 @@ import {
   Star
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
+import { ShieldCheck, ShieldAlert, ShieldQuestion } from 'lucide-react';
+
+// Comprime la captura a una miniatura JPEG pequeña (~10-30 KB). En localStorage solo
+// se guarda esta miniatura: el PNG original en base64 ocupaba 1-3 MB por captura y
+// reventaba el límite de ~5 MB de localStorage con pocas capturas (QuotaExceededError
+// silencioso = avisos que dejaban de guardarse).
+function compressToThumbnail(dataUrl: string, maxSide = 640, quality = 0.72): Promise<string> {
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => {
+      const scale = Math.min(1, maxSide / Math.max(img.width, img.height));
+      const canvas = document.createElement('canvas');
+      canvas.width = Math.max(1, Math.round(img.width * scale));
+      canvas.height = Math.max(1, Math.round(img.height * scale));
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return resolve(dataUrl);
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+      resolve(canvas.toDataURL('image/jpeg', quality));
+    };
+    img.onerror = () => resolve(dataUrl);
+    img.src = dataUrl;
+  });
+}
+
+// La captura original se guarda en disco vía servidor; devuelve su id (o undefined si falla).
+async function saveCaptureToDisk(imageBase64: string): Promise<string | undefined> {
+  try {
+    const res = await fetch('/api/capturas', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ imageBase64 }),
+    });
+    if (!res.ok) return undefined;
+    return (await res.json()).id;
+  } catch {
+    return undefined;
+  }
+}
+
+function deleteCaptureFromDisk(id?: string) {
+  if (!id) return;
+  fetch('/api/capturas/' + id, { method: 'DELETE' }).catch(() => {});
+}
+
+// Combina la validación determinista (checksums) con el resultado de la segunda
+// lectura de la IA para dar un veredicto por aviso.
+function buildVerification(
+  notice: Pick<TaxNotice, 'modelo' | 'periodo' | 'ejercicio' | 'cliente_nif' | 'cliente_nombre' | 'importe' | 'tipo_resultado' | 'iban'>,
+  discrepanciasIA: { campo: string; primera: string; segunda: string }[],
+  segundaLecturaHecha: boolean
+): NoticeVerification {
+  const checks = verifyNoticeFields(notice);
+  const hasProblem = checks.some((c) => c.status !== 'ok') || discrepanciasIA.length > 0;
+  return {
+    estado: hasProblem ? 'revisar' : segundaLecturaHecha ? 'ok' : 'sin-verificar',
+    checks,
+    discrepanciasIA,
+    segundaLecturaHecha,
+  };
+}
+
+const FIELD_LABELS: Record<string, string> = {
+  iban: 'IBAN',
+  cliente_nif: 'NIF',
+  cliente_nombre: 'Nombre',
+  importe: 'Importe',
+  modelo: 'Modelo',
+  periodo: 'Periodo',
+  ejercicio: 'Ejercicio',
+  tipo_resultado: 'Resultado',
+};
 
 export default function App() {
   const [rawNotices, setRawNotices] = useState<TaxNotice[]>([]);
@@ -61,7 +135,23 @@ export default function App() {
     const savedNotices = localStorage.getItem('aeat_raw_notices');
     if (savedNotices) {
       try {
-        setRawNotices(JSON.parse(savedNotices));
+        const parsed: TaxNotice[] = JSON.parse(savedNotices);
+        setRawNotices(parsed);
+
+        // Migración suave: avisos guardados por versiones anteriores llevan la
+        // captura completa en base64 dentro de localStorage. Se re-comprimen a
+        // miniatura para liberar espacio (la original de esos avisos ya no existe
+        // en disco, pero la miniatura sigue siendo perfectamente legible).
+        const oversized = parsed.filter((n) => (n.screenshotUrl?.length || 0) > 150_000);
+        if (oversized.length > 0) {
+          Promise.all(
+            parsed.map(async (n) =>
+              (n.screenshotUrl?.length || 0) > 150_000
+                ? { ...n, screenshotUrl: await compressToThumbnail(n.screenshotUrl!) }
+                : n
+            )
+          ).then((migrated) => saveNoticesToLocal(migrated));
+        }
       } catch (e) {
         console.error("Failed to load saved notices", e);
       }
@@ -71,7 +161,13 @@ export default function App() {
   // Save changes to localStorage
   const saveNoticesToLocal = (newNotices: TaxNotice[]) => {
     setRawNotices(newNotices);
-    localStorage.setItem('aeat_raw_notices', JSON.stringify(newNotices));
+    try {
+      localStorage.setItem('aeat_raw_notices', JSON.stringify(newNotices));
+    } catch (e) {
+      // Cuota de localStorage superada: mejor avisar que perder avisos en silencio.
+      console.error('No se pudo guardar en localStorage', e);
+      alert('Atención: no se han podido guardar los avisos en el almacenamiento local (espacio lleno). Elimine avisos antiguos con el botón "Limpiar".');
+    }
   };
 
   const handleAgencyNameChange = (val: string) => {
@@ -152,11 +248,25 @@ export default function App() {
       }
 
       const data = await response.json();
-      
-      // 3. Calculate AEAT deadline dates
+
+      // 3. En paralelo: segunda lectura de verificación con la IA, guardado de la
+      // captura original en disco y miniatura comprimida para la interfaz.
+      const [verifyRes, screenshotId, thumbnail] = await Promise.all([
+        fetch('/api/gemini/verify-tax', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ imageBase64: base64Image, extracted: data }),
+        })
+          .then((r) => (r.ok ? r.json() : null))
+          .catch(() => null),
+        saveCaptureToDisk(base64Image),
+        compressToThumbnail(base64Image),
+      ]);
+
+      // 4. Calculate AEAT deadline dates
       const deadlines = calculateAEATDeadlines(data.modelo, data.periodo, data.ejercicio);
 
-      // 4. Construct final Notice object
+      // 5. Construct final Notice object
       const newNotice: TaxNotice = {
         id: Math.random().toString(36).substring(2, 9),
         modelo: data.modelo || '303',
@@ -168,11 +278,20 @@ export default function App() {
         importe: typeof data.importe === 'number' ? data.importe : parseFloat(data.importe) || 0,
         tipo_resultado: data.tipo_resultado || 'Domiciliación',
         iban: data.iban || '',
-        screenshotUrl: base64Image, // save base64 string to render thumbnail!
+        screenshotUrl: thumbnail,
+        screenshotId,
         fechaCargo: deadlines.fechaCargo.toISOString(),
         fechaLimiteDomiciliacion: deadlines.fechaLimiteDomiciliacion.toISOString(),
         timestamp: Date.now()
       };
+
+      // 6. Veredicto de verificación: checksums (IBAN/NIF/periodo...) + comparación
+      // de las dos lecturas independientes de la IA.
+      newNotice.verificacion = buildVerification(
+        newNotice,
+        verifyRes?.discrepancias || [],
+        !!verifyRes
+      );
 
       // Add to our list
       const updated = [newNotice, ...rawNotices];
@@ -232,7 +351,9 @@ export default function App() {
   const getGroupedNotices = (notices: TaxNotice[]): JointNotice[] => {
     const map = new Map<string, TaxNotice[]>();
     notices.forEach((n) => {
-      const key = (n.cliente_nif || n.cliente_nombre || 'NIF-PENDIENTE').replace(/\s+/g, '').toUpperCase();
+      // Clave normalizada (sin espacios/guiones/puntos): si Gemini lee el NIF con un
+      // espacio de más en la segunda captura, el cliente seguirá agrupándose junto.
+      const key = normalizeNifKey(n.cliente_nif, n.cliente_nombre);
       if (!map.has(key)) {
         map.set(key, []);
       }
@@ -344,35 +465,38 @@ export default function App() {
   };
 
   const handleEditSave = (updatedJoint: JointNotice) => {
-    // Re-calculate dates for edited taxes and update
-    const updatedNotices = rawNotices.map((raw) => {
-      const isEdited = raw.cliente_nif.replace(/\s+/g, '').toUpperCase() === updatedJoint.cliente_nif.replace(/\s+/g, '').toUpperCase() || 
-                       raw.id === updatedJoint.id;
+    // Tras una edición manual: recalcular fechas y re-verificar con los checksums.
+    // Las discrepancias de la doble lectura de la IA se descartan (el usuario acaba
+    // de revisar los datos a mano, y eso es la verificación definitiva).
+    const applyEdit = (edit: TaxNotice): TaxNotice => {
+      const dl = calculateAEATDeadlines(edit.modelo, edit.periodo, edit.ejercicio);
+      const result: TaxNotice = {
+        ...edit,
+        fechaCargo: dl.fechaCargo.toISOString(),
+        fechaLimiteDomiciliacion: dl.fechaLimiteDomiciliacion.toISOString(),
+      };
+      result.verificacion = buildVerification(result, [], edit.verificacion?.segundaLecturaHecha ?? false);
+      return result;
+    };
 
+    // Los impuestos quitados en el editor se eliminan de verdad (antes se
+    // quedaban en la lista al guardar) y se borra su captura del disco.
+    const editedIds = new Set(updatedJoint.notices.map((n) => n.id));
+    const belongsToGroup = (n: TaxNotice) => normalizeNifKey(n.cliente_nif, n.cliente_nombre) === updatedJoint.id;
+    rawNotices
+      .filter((n) => belongsToGroup(n) && !editedIds.has(n.id))
+      .forEach((n) => deleteCaptureFromDisk(n.screenshotId));
+
+    const kept = rawNotices.filter((n) => !belongsToGroup(n) || editedIds.has(n.id));
+
+    const updatedNotices = kept.map((raw) => {
       const matchingEdit = updatedJoint.notices.find(n => n.id === raw.id);
-      
-      if (matchingEdit) {
-        // Re-calculate deadlines based on edit
-        const dl = calculateAEATDeadlines(matchingEdit.modelo, matchingEdit.periodo, matchingEdit.ejercicio);
-        return {
-          ...matchingEdit,
-          fechaCargo: dl.fechaCargo.toISOString(),
-          fechaLimiteDomiciliacion: dl.fechaLimiteDomiciliacion.toISOString(),
-        };
-      }
-      return raw;
+      return matchingEdit ? applyEdit(matchingEdit) : raw;
     });
 
     // Also add any new manual taxes that might be added inside NoticeEditor
     const existingIds = rawNotices.map(r => r.id);
-    const addedTaxes = updatedJoint.notices.filter(n => !existingIds.includes(n.id)).map(matchingEdit => {
-      const dl = calculateAEATDeadlines(matchingEdit.modelo, matchingEdit.periodo, matchingEdit.ejercicio);
-      return {
-        ...matchingEdit,
-        fechaCargo: dl.fechaCargo.toISOString(),
-        fechaLimiteDomiciliacion: dl.fechaLimiteDomiciliacion.toISOString(),
-      };
-    });
+    const addedTaxes = updatedJoint.notices.filter(n => !existingIds.includes(n.id)).map(applyEdit);
 
     const finalNotices = [...updatedNotices, ...addedTaxes];
     saveNoticesToLocal(finalNotices);
@@ -381,16 +505,16 @@ export default function App() {
 
   const handleDeleteClientGroup = (jointId: string) => {
     if (confirm("¿Está seguro de que desea eliminar todas las declaraciones de este cliente?")) {
-      const updated = rawNotices.filter((n) => {
-        const key = (n.cliente_nif || n.cliente_nombre || 'NIF-PENDIENTE').replace(/\s+/g, '').toUpperCase();
-        return key !== jointId;
-      });
+      const removed = rawNotices.filter((n) => normalizeNifKey(n.cliente_nif, n.cliente_nombre) === jointId);
+      removed.forEach((n) => deleteCaptureFromDisk(n.screenshotId));
+      const updated = rawNotices.filter((n) => normalizeNifKey(n.cliente_nif, n.cliente_nombre) !== jointId);
       saveNoticesToLocal(updated);
     }
   };
 
   const handleClearAll = () => {
     if (confirm("¿Seguro que desea limpiar todas las declaraciones cargadas?")) {
+      rawNotices.forEach((n) => deleteCaptureFromDisk(n.screenshotId));
       saveNoticesToLocal([]);
     }
   };
@@ -501,10 +625,10 @@ export default function App() {
 
               <button
                 onClick={handleReadClipboard}
-                className="w-full flex items-center justify-center gap-1.5 px-4 py-2 text-xs font-bold text-white bg-slate-800 hover:bg-slate-900 rounded-lg transition-all shadow-xs"
+                className="w-full flex items-center justify-center gap-2 px-4 py-2.5 text-sm font-bold text-white bg-slate-800 hover:bg-slate-900 rounded-lg transition-all shadow-xs"
                 id="btn-paste-clipboard"
               >
-                <Clipboard className="w-3.5 h-3.5" />
+                <Clipboard className="w-4 h-4" />
                 <span>Pegar automáticamente</span>
               </button>
 
@@ -683,6 +807,31 @@ export default function App() {
                 const currentTab = activeTab[joint.id] || 'text';
                 const isEditing = editingJointId === joint.id;
 
+                // Estado de verificación del grupo: el peor de sus avisos.
+                const verifState = (() => {
+                  let revisar = false, sinVerificar = false;
+                  joint.notices.forEach((n) => {
+                    const v = n.verificacion;
+                    if (!v || v.estado === 'sin-verificar') sinVerificar = true;
+                    else if (v.estado === 'revisar') revisar = true;
+                  });
+                  return revisar ? 'revisar' : sinVerificar ? 'sin-verificar' : 'ok';
+                })();
+
+                const verifIssues = joint.notices.flatMap((n) => {
+                  const v = n.verificacion;
+                  if (!v) return [];
+                  const prefix = joint.notices.length > 1 ? `Modelo ${n.modelo}: ` : '';
+                  const checks = v.checks
+                    .filter((c) => c.status !== 'ok')
+                    .map((c) => ({ level: c.status, text: `${prefix}${c.message}` }));
+                  const discrepancies = v.discrepanciasIA.map((d) => ({
+                    level: 'error' as const,
+                    text: `${prefix}${FIELD_LABELS[d.campo] || d.campo}: las dos lecturas de la IA no coinciden («${d.primera}» frente a «${d.segunda}»). Compare con la captura.`,
+                  }));
+                  return [...checks, ...discrepancies];
+                });
+
                 return (
                   <motion.div
                     key={joint.id}
@@ -703,6 +852,24 @@ export default function App() {
                           <span className="px-2 py-0.5 rounded bg-slate-100 border border-slate-200 text-[10px] font-bold text-slate-600 uppercase font-mono">
                             {joint.cliente_nif}
                           </span>
+                          {verifState === 'ok' && (
+                            <span className="flex items-center gap-1 px-2 py-0.5 rounded-full bg-emerald-50 border border-emerald-200 text-[10px] font-bold text-emerald-700" title="Checksums de IBAN/NIF correctos y doble lectura de la IA coincidente">
+                              <ShieldCheck className="w-3 h-3" />
+                              Datos verificados
+                            </span>
+                          )}
+                          {verifState === 'revisar' && (
+                            <span className="flex items-center gap-1 px-2 py-0.5 rounded-full bg-rose-50 border border-rose-200 text-[10px] font-bold text-rose-700" title="Hay datos que no superan la comprobación. Revise antes de enviar.">
+                              <ShieldAlert className="w-3 h-3" />
+                              Revisar datos
+                            </span>
+                          )}
+                          {verifState === 'sin-verificar' && (
+                            <span className="flex items-center gap-1 px-2 py-0.5 rounded-full bg-slate-50 border border-slate-200 text-[10px] font-bold text-slate-500" title="No se pudo hacer la verificación automática (aviso antiguo, manual o fallo de red)">
+                              <ShieldQuestion className="w-3 h-3" />
+                              Sin verificar
+                            </span>
+                          )}
                         </div>
                         
                         <p className="text-xs text-slate-500 mt-1 flex items-center gap-1.5 flex-wrap">
@@ -734,6 +901,27 @@ export default function App() {
                         </button>
                       </div>
                     </div>
+
+                    {/* Detalle de la verificación cuando hay algo que revisar */}
+                    {verifIssues.length > 0 && (
+                      <div className="px-5 py-3 bg-rose-50/40 border-b border-rose-100">
+                        <div className="flex items-center gap-1.5 mb-1.5">
+                          <ShieldAlert className="w-4 h-4 text-rose-600" />
+                          <span className="text-xs font-bold text-rose-700">Comprobaciones sobre los datos capturados</span>
+                        </div>
+                        <ul className="space-y-1 pl-1">
+                          {verifIssues.map((issue, i) => (
+                            <li key={i} className={`text-[11px] leading-relaxed flex gap-1.5 ${issue.level === 'error' ? 'text-rose-700' : 'text-amber-700'}`}>
+                              <span className="shrink-0">{issue.level === 'error' ? '✖' : '⚠'}</span>
+                              <span>{issue.text}</span>
+                            </li>
+                          ))}
+                        </ul>
+                        <p className="text-[10px] text-slate-500 mt-1.5">
+                          Compare con la captura asociada (abajo) y corrija con «Editar Datos». Al guardar, las comprobaciones se recalculan.
+                        </p>
+                      </div>
+                    )}
 
                     {/* Editor view if active */}
                     {isEditing ? (
@@ -781,13 +969,13 @@ export default function App() {
                       {currentTab === 'text' ? (
                         <div className="space-y-4">
                           <div className="bg-slate-50 rounded-xl p-4 border border-slate-100 relative">
-                            <pre className="text-xs text-slate-800 font-mono whitespace-pre-wrap leading-relaxed max-w-full overflow-x-auto">
+                            <pre className="text-[13px] text-slate-800 font-mono whitespace-pre-wrap leading-relaxed max-w-full overflow-x-auto">
                               {generateWhatsAppText(joint)}
                             </pre>
                             
                             <button
                               onClick={() => copyWhatsAppText(joint)}
-                              className="absolute top-4 right-4 flex items-center gap-1 px-2.5 py-1 text-[11px] font-bold rounded-md shadow-xs transition-all bg-white border border-slate-200 text-slate-700 hover:bg-slate-50"
+                              className="absolute top-4 right-4 flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold rounded-md shadow-xs transition-all bg-white border border-slate-200 text-slate-700 hover:bg-slate-50"
                               id={`btn-copy-wa-${joint.id}`}
                             >
                               {copiedTextId === joint.id ? (
@@ -834,9 +1022,13 @@ export default function App() {
                                 className="relative w-12 h-10 rounded border border-slate-200 overflow-hidden bg-white shrink-0 group cursor-pointer"
                                 title={`Modelo ${tax.modelo} (${tax.ejercicio})`}
                                 onClick={() => {
-                                  // Open raw image in new tab securely
-                                  const win = window.open();
-                                  if (win) win.document.write(`<img src="${tax.screenshotUrl}" style="max-width:100%"/>`);
+                                  // La original en disco si existe; si no (aviso antiguo), la miniatura.
+                                  if (tax.screenshotId) {
+                                    window.open('/api/capturas/' + tax.screenshotId, '_blank');
+                                  } else {
+                                    const win = window.open();
+                                    if (win) win.document.write(`<img src="${tax.screenshotUrl}" style="max-width:100%"/>`);
+                                  }
                                 }}
                               >
                                 <img 

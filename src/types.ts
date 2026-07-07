@@ -1,3 +1,14 @@
+import type { FieldCheck } from './validation';
+
+export interface NoticeVerification {
+  /** 'ok' = checksums y segunda lectura correctos; 'revisar' = algo no cuadra; 'sin-verificar' = la 2ª lectura no pudo hacerse */
+  estado: 'ok' | 'revisar' | 'sin-verificar';
+  checks: FieldCheck[];
+  /** Campos donde la segunda lectura de la IA no coincidió con la primera */
+  discrepanciasIA: { campo: string; primera: string; segunda: string }[];
+  segundaLecturaHecha: boolean;
+}
+
 export interface TaxNotice {
   id: string;
   modelo: string;
@@ -9,10 +20,12 @@ export interface TaxNotice {
   importe: number;
   tipo_resultado: 'Domiciliación' | 'A ingresar' | 'A compensar' | 'Resultado cero / Sin actividad' | 'Devolución';
   iban?: string;
-  screenshotUrl?: string; // thumbnail base64
+  screenshotUrl?: string; // miniatura JPEG comprimida (base64 pequeño)
+  screenshotId?: string; // id de la captura original guardada en disco (/api/capturas/:id)
   fechaCargo: string; // Calculated final AEAT charge/deadline
   fechaLimiteDomiciliacion: string; // Calculated direct debit cutoff
   timestamp: number;
+  verificacion?: NoticeVerification;
 }
 
 export interface JointNotice {

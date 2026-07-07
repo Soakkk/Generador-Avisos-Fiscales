@@ -9,7 +9,10 @@ import { GoogleGenAI, Type } from "@google/genai";
 dotenv.config();
 
 const app = express();
-const PORT = 3000;
+// Puerto fijo 3000 en producción (Electron carga localhost:3000); en desarrollo
+// puede cambiarse con la variable PORT si el 3000 está ocupado (p. ej. por la
+// propia app instalada corriendo a la vez).
+const PORT = parseInt(process.env.PORT || "3000", 10);
 
 // Versión de la app: en el .exe la inyecta Electron (APP_VERSION = app.getVersion());
 // en desarrollo se lee de package.json.
@@ -30,6 +33,30 @@ app.use(express.json({ limit: "20mb" }));
 // and works both in "npm run dev" and in the packaged .exe.
 const CONFIG_DIR = path.join(os.homedir(), ".generador-avisos-fiscales");
 const CONFIG_FILE = path.join(CONFIG_DIR, "config.json");
+
+// Las capturas originales se guardan en disco (no en el localStorage del
+// navegador, que tiene un límite de ~5MB y se llenaba con 2-3 capturas en
+// base64, dejando de guardar avisos en silencio). El frontend solo conserva
+// una miniatura pequeña y el id del archivo.
+const CAPTURAS_DIR = path.join(CONFIG_DIR, "capturas");
+
+// Barrido al arrancar: capturas huérfanas de más de 90 días se eliminan para
+// que la carpeta no crezca sin límite (los avisos activos rara vez viven tanto).
+function limpiarCapturasAntiguas() {
+  try {
+    if (!fs.existsSync(CAPTURAS_DIR)) return;
+    const limite = Date.now() - 90 * 24 * 60 * 60 * 1000;
+    for (const nombre of fs.readdirSync(CAPTURAS_DIR)) {
+      const ruta = path.join(CAPTURAS_DIR, nombre);
+      try {
+        if (fs.statSync(ruta).mtimeMs < limite) fs.unlinkSync(ruta);
+      } catch { /* si un archivo falla, seguimos con el resto */ }
+    }
+  } catch (err) {
+    console.warn("No se pudo limpiar capturas antiguas:", err);
+  }
+}
+limpiarCapturasAntiguas();
 
 function loadStoredApiKey(): string | undefined {
   try {
@@ -102,7 +129,85 @@ app.post("/api/config", (req, res) => {
   }
 });
 
-// API: Analyze Tax Image using Gemini 3.5 Flash
+// API: Probar que la clave guardada funciona de verdad contra Gemini
+// (hasta ahora solo se comprobaba que había "algo" guardado, no que fuera válida).
+app.post("/api/config/test", async (req, res) => {
+  if (!ai) {
+    return res.status(400).json({ ok: false, error: "No hay ninguna clave configurada todavía." });
+  }
+  try {
+    const response = await withTimeout(
+      ai.models.generateContent({
+        model: "gemini-2.5-flash",
+        contents: [{ text: "Responde únicamente con la palabra OK." }],
+      }),
+      15_000
+    );
+    const text = (response.text || "").trim();
+    return res.json({ ok: true, respuesta: text });
+  } catch (error: any) {
+    const text = String(error?.message || error || "");
+    const lower = text.toLowerCase();
+    let message: string;
+    if (text.includes("429") || lower.includes("quota")) {
+      message = "La clave funciona pero ha agotado su cuota gratuita en este momento.";
+    } else if (lower.includes("api key") || lower.includes("api_key") || lower.includes("invalid") ||
+               text.includes("400") || text.includes("401") || text.includes("403")) {
+      message = "La clave no es válida o ha caducado. Cree una nueva en Google AI Studio.";
+    } else if (text.includes("TIMEOUT_GEMINI")) {
+      message = "Gemini no ha respondido (red lenta o servicio saturado). Inténtelo de nuevo.";
+    } else {
+      message = "No se pudo comprobar la clave: " + text;
+    }
+    return res.status(400).json({ ok: false, error: message });
+  }
+});
+
+// ---- Almacén de capturas en disco ----
+
+// Guarda la captura original y devuelve un id para recuperarla después.
+app.post("/api/capturas", (req, res) => {
+  const { imageBase64 } = req.body;
+  if (!imageBase64 || typeof imageBase64 !== "string") {
+    return res.status(400).json({ error: "Falta la imagen." });
+  }
+  try {
+    fs.mkdirSync(CAPTURAS_DIR, { recursive: true });
+    const clean = imageBase64.replace(/^data:image\/\w+;base64,/, "");
+    const id = Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 8);
+    fs.writeFileSync(path.join(CAPTURAS_DIR, id + ".png"), Buffer.from(clean, "base64"));
+    return res.json({ id });
+  } catch (err) {
+    console.error("Error guardando la captura:", err);
+    return res.status(500).json({ error: "No se pudo guardar la captura en disco." });
+  }
+});
+
+app.get("/api/capturas/:id", (req, res) => {
+  // El id lo genera el servidor (base36 + guion); rechazamos cualquier otra cosa
+  // para que nadie pueda pedir rutas arbitrarias del disco.
+  const id = String(req.params.id || "");
+  if (!/^[a-z0-9-]+$/.test(id)) return res.status(400).end();
+  const ruta = path.join(CAPTURAS_DIR, id + ".png");
+  if (!fs.existsSync(ruta)) return res.status(404).json({ error: "Captura no encontrada." });
+  res.setHeader("Content-Type", "image/png");
+  fs.createReadStream(ruta).pipe(res);
+});
+
+app.delete("/api/capturas/:id", (req, res) => {
+  const id = String(req.params.id || "");
+  if (!/^[a-z0-9-]+$/.test(id)) return res.status(400).end();
+  try {
+    const ruta = path.join(CAPTURAS_DIR, id + ".png");
+    if (fs.existsSync(ruta)) fs.unlinkSync(ruta);
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error("Error borrando la captura:", err);
+    return res.status(500).json({ error: "No se pudo borrar la captura." });
+  }
+});
+
+// API: Analyze Tax Image using Gemini
 function isRetryableGeminiError(error: any): boolean {
   const text = String(error?.message || error || "");
   return (
@@ -150,6 +255,50 @@ async function generateContentWithRetry(params: Parameters<GoogleGenAI["models"]
   throw new Error("No se pudo contactar con Gemini tras varios intentos.");
 }
 
+// Esquema compartido por la lectura principal y la segunda lectura de verificación.
+const TAX_SCHEMA = {
+  type: Type.OBJECT,
+  properties: {
+    modelo: {
+      type: Type.STRING,
+      description: "Número del modelo tributario, p. ej. '303', '111', '115', '130', '190', '200', '202'"
+    },
+    modelo_nombre: {
+      type: Type.STRING,
+      description: "Nombre oficial o descriptivo del impuesto, p. ej. 'Impuesto sobre el Valor Añadido' o 'Retenciones de IRPF'"
+    },
+    periodo: {
+      type: Type.STRING,
+      description: "Periodo o trimestre, p. ej. '1T', '2T', '3T', '4T', '01', '10', '12'"
+    },
+    ejercicio: {
+      type: Type.STRING,
+      description: "Ejercicio fiscal, p. ej. '2026' o '2025'"
+    },
+    cliente_nif: {
+      type: Type.STRING,
+      description: "NIF, CIF o NIE del declarante o cliente"
+    },
+    cliente_nombre: {
+      type: Type.STRING,
+      description: "Nombre completo, apellidos y nombre, o denominación social del cliente"
+    },
+    importe: {
+      type: Type.NUMBER,
+      description: "Importe neto resultante de la liquidación como número real positivo o negativo, p. ej. 818.55"
+    },
+    tipo_resultado: {
+      type: Type.STRING,
+      description: "Tipo de resultado. Debe ser exactamente uno de estos valores: 'Domiciliación', 'A ingresar', 'A compensar', 'Resultado cero / Sin actividad', 'Devolución'"
+    },
+    iban: {
+      type: Type.STRING,
+      description: "Código IBAN completo sin espacios si se muestra en el formulario de pago, p. ej. 'ES2900811016100006298239'. Si no hay o es parcial, ponlo también."
+    }
+  },
+  required: ["modelo", "periodo", "ejercicio", "cliente_nif", "cliente_nombre", "importe", "tipo_resultado"]
+};
+
 app.post("/api/gemini/analyze-tax", async (req, res) => {
   try {
     if (!ai) {
@@ -189,48 +338,7 @@ app.post("/api/gemini/analyze-tax", async (req, res) => {
       ],
       config: {
         responseMimeType: "application/json",
-        responseSchema: {
-          type: Type.OBJECT,
-          properties: {
-            modelo: { 
-              type: Type.STRING, 
-              description: "Número del modelo tributario, p. ej. '303', '111', '115', '130', '190', '200', '202'" 
-            },
-            modelo_nombre: { 
-              type: Type.STRING, 
-              description: "Nombre oficial o descriptivo del impuesto, p. ej. 'Impuesto sobre el Valor Añadido' o 'Retenciones de IRPF'" 
-            },
-            periodo: { 
-              type: Type.STRING, 
-              description: "Periodo o trimestre, p. ej. '1T', '2T', '3T', '4T', '01', '10', '12'" 
-            },
-            ejercicio: { 
-              type: Type.STRING, 
-              description: "Ejercicio fiscal, p. ej. '2026' o '2025'" 
-            },
-            cliente_nif: { 
-              type: Type.STRING, 
-              description: "NIF, CIF o NIE del declarante o cliente" 
-            },
-            cliente_nombre: { 
-              type: Type.STRING, 
-              description: "Nombre completo, apellidos y nombre, o denominación social del cliente" 
-            },
-            importe: { 
-              type: Type.NUMBER, 
-              description: "Importe neto resultante de la liquidación como número real positivo o negativo, p. ej. 818.55" 
-            },
-            tipo_resultado: { 
-              type: Type.STRING, 
-              description: "Tipo de resultado. Debe ser exactamente uno de estos valores: 'Domiciliación', 'A ingresar', 'A compensar', 'Resultado cero / Sin actividad', 'Devolución'" 
-            },
-            iban: { 
-              type: Type.STRING, 
-              description: "Código IBAN completo sin espacios si se muestra en el formulario de pago, p. ej. 'ES2900811016100006298239'. Si no hay o es parcial, ponlo también." 
-            }
-          },
-          required: ["modelo", "periodo", "ejercicio", "cliente_nif", "cliente_nombre", "importe", "tipo_resultado"]
-        }
+        responseSchema: TAX_SCHEMA
       }
     });
 
@@ -260,6 +368,89 @@ app.post("/api/gemini/analyze-tax", async (req, res) => {
       message = "Error al procesar la imagen con Gemini: " + (error.message || error);
     }
     return res.status(503).json({ error: message });
+  }
+});
+
+// ---- Segunda lectura de verificación ----
+// Vuelve a leer la MISMA captura con un prompt distinto, centrado en transcribir
+// dígito a dígito los campos críticos, y compara con la primera lectura. Si dos
+// lecturas independientes coinciden (y además el checksum del IBAN/NIF pasa en el
+// frontend), la probabilidad de que un dígito esté mal leído es mínima.
+
+function normalizarCampo(campo: string, valor: any): string {
+  const s = valor === undefined || valor === null ? "" : String(valor);
+  switch (campo) {
+    case "iban":
+    case "cliente_nif":
+      return s.replace(/[\s.-]+/g, "").toUpperCase();
+    case "periodo":
+      return s.trim().toUpperCase();
+    case "cliente_nombre":
+      // Sin acentos, mayúsculas y espacios colapsados: "José Pérez " == "JOSE PEREZ"
+      return s.normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/\s+/g, " ").trim().toUpperCase();
+    case "importe":
+      return (Math.round((parseFloat(s) || 0) * 100) / 100).toFixed(2);
+    default:
+      return s.trim();
+  }
+}
+
+app.post("/api/gemini/verify-tax", async (req, res) => {
+  try {
+    if (!ai) {
+      return res.status(500).json({ error: "El servicio de IA no está configurado." });
+    }
+    const { imageBase64, extracted } = req.body;
+    if (!imageBase64 || !extracted) {
+      return res.status(400).json({ error: "Faltan la imagen o los datos a verificar." });
+    }
+    const cleanBase64 = String(imageBase64).replace(/^data:image\/\w+;base64,/, "");
+
+    const promptText = "Eres un transcriptor de documentos fiscales españoles. Tu única tarea es LEER Y TRANSCRIBIR " +
+      "con exactitud absoluta, dígito a dígito y letra a letra, los datos de esta captura de un modelo tributario " +
+      "(AEAT, A3, SAGE...). No interpretes ni corrijas nada: copia exactamente lo que ves. Presta especial atención a: " +
+      "el IBAN completo (verifica cada dígito dos veces), el importe exacto con sus decimales, el NIF/CIF con su letra, " +
+      "y el nombre completo del cliente. Devuelve el JSON según el esquema.";
+
+    const response = await generateContentWithRetry({
+      model: "gemini-2.5-flash",
+      contents: [
+        { inlineData: { mimeType: "image/png", data: cleanBase64 } },
+        { text: promptText }
+      ],
+      config: {
+        responseMimeType: "application/json",
+        responseSchema: TAX_SCHEMA
+      }
+    });
+
+    const textResult = response.text;
+    if (!textResult) throw new Error("Sin respuesta estructurada en la verificación.");
+    const segunda = JSON.parse(textResult.trim());
+
+    // Solo comparamos los campos donde un error tiene consecuencias reales.
+    const camposCriticos = ["iban", "importe", "cliente_nif", "cliente_nombre", "modelo", "periodo", "ejercicio", "tipo_resultado"];
+    const discrepancias: { campo: string; primera: string; segunda: string }[] = [];
+    for (const campo of camposCriticos) {
+      const v1 = normalizarCampo(campo, (extracted as any)[campo]);
+      const v2 = normalizarCampo(campo, segunda[campo]);
+      // Si ninguna de las dos lecturas vio el campo, no hay nada que comparar.
+      if (!v1 && !v2) continue;
+      if (v1 !== v2) {
+        discrepancias.push({
+          campo,
+          primera: String((extracted as any)[campo] ?? ""),
+          segunda: String(segunda[campo] ?? ""),
+        });
+      }
+    }
+
+    return res.json({ coincide: discrepancias.length === 0, discrepancias, segunda });
+  } catch (error: any) {
+    console.error("Error en la verificación con segunda lectura:", error);
+    // La verificación es una red de seguridad: si falla (cuota, red...), no
+    // bloqueamos el flujo; el frontend lo marca como "sin verificar".
+    return res.status(503).json({ error: "No se pudo completar la segunda lectura de verificación." });
   }
 });
 
