@@ -94,11 +94,28 @@ app.post("/api/config", (req, res) => {
 // API: Analyze Tax Image using Gemini 3.5 Flash
 function isRetryableGeminiError(error: any): boolean {
   const text = String(error?.message || error || "");
-  return text.includes("503") || text.includes("UNAVAILABLE") || text.includes("overloaded") || text.includes("high demand");
+  return (
+    text.includes("503") || text.includes("UNAVAILABLE") || text.includes("overloaded") ||
+    text.includes("high demand") || text.includes("TIMEOUT_GEMINI")
+  );
 }
 
 function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// Corta la espera si Gemini no responde en este tiempo, en vez de colgar la app
+// para siempre (p. ej. por un corte de red o un firewall que descarta paquetes
+// en silencio). Cuenta como fallo "reintentable", igual que un 503.
+const GEMINI_TIMEOUT_MS = 45_000;
+function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error("TIMEOUT_GEMINI: sin respuesta de Gemini")), ms);
+    promise.then(
+      (value) => { clearTimeout(timer); resolve(value); },
+      (err) => { clearTimeout(timer); reject(err); }
+    );
+  });
 }
 
 // Gemini a veces devuelve 503 ("high demand") cuando el modelo está saturado.
@@ -107,12 +124,12 @@ async function generateContentWithRetry(params: Parameters<GoogleGenAI["models"]
   const maxAttempts = 3;
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     try {
-      return await ai!.models.generateContent(params);
+      return await withTimeout(ai!.models.generateContent(params), GEMINI_TIMEOUT_MS);
     } catch (error: any) {
       const isLastAttempt = attempt === maxAttempts;
       if (!isRetryableGeminiError(error) || isLastAttempt) throw error;
       const waitMs = 1500 * attempt;
-      console.warn(`Gemini saturado (intento ${attempt}/${maxAttempts}), reintentando en ${waitMs}ms...`);
+      console.warn(`Gemini saturado o sin respuesta (intento ${attempt}/${maxAttempts}), reintentando en ${waitMs}ms...`);
       await sleep(waitMs);
     }
   }
@@ -208,9 +225,15 @@ app.post("/api/gemini/analyze-tax", async (req, res) => {
     return res.json(parsedData);
   } catch (error: any) {
     console.error("Error analyzing tax image with Gemini:", error);
-    const message = isRetryableGeminiError(error)
-      ? "Gemini está saturado en este momento (mucha demanda en Google). Espere unos segundos y vuelva a pegar la captura."
-      : "Error al procesar la imagen con Gemini: " + (error.message || error);
+    const text = String(error?.message || error || "");
+    let message: string;
+    if (text.includes("TIMEOUT_GEMINI")) {
+      message = "No se ha recibido respuesta de Gemini a tiempo (posible problema de conexión a internet). Compruebe su red e inténtelo de nuevo.";
+    } else if (isRetryableGeminiError(error)) {
+      message = "Gemini está saturado en este momento (mucha demanda en Google). Espere unos segundos y vuelva a pegar la captura.";
+    } else {
+      message = "Error al procesar la imagen con Gemini: " + (error.message || error);
+    }
     return res.status(503).json({ error: message });
   }
 });
