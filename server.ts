@@ -412,21 +412,39 @@ app.post("/api/gemini/verify-tax", async (req, res) => {
       "el IBAN completo (verifica cada dígito dos veces), el importe exacto con sus decimales, el NIF/CIF con su letra, " +
       "y el nombre completo del cliente. Devuelve el JSON según el esquema.";
 
-    const response = await generateContentWithRetry({
-      model: "gemini-2.5-flash",
-      contents: [
-        { inlineData: { mimeType: "image/png", data: cleanBase64 } },
-        { text: promptText }
-      ],
-      config: {
-        responseMimeType: "application/json",
-        responseSchema: TAX_SCHEMA
+    // La verificación usa un MODELO DISTINTO al de la primera lectura
+    // (gemini-2.5-flash): dos modelos diferentes casi nunca cometen el mismo
+    // error de OCR en el mismo dígito, así el contraste es de verdad
+    // independiente. Misma clave de API, sin coste extra. Si el modelo
+    // preferido no está disponible para esta clave, se recurre al siguiente.
+    const VERIFY_MODELS = ["gemini-2.0-flash", "gemini-2.5-flash-lite", "gemini-2.5-flash"];
+    let segunda: any = null;
+    let modeloUsado = "";
+    let ultimoError: any = null;
+    for (const model of VERIFY_MODELS) {
+      try {
+        const response = await generateContentWithRetry({
+          model,
+          contents: [
+            { inlineData: { mimeType: "image/png", data: cleanBase64 } },
+            { text: promptText }
+          ],
+          config: {
+            responseMimeType: "application/json",
+            responseSchema: TAX_SCHEMA
+          }
+        });
+        const textResult = response.text;
+        if (!textResult) throw new Error("Sin respuesta estructurada en la verificación.");
+        segunda = JSON.parse(textResult.trim());
+        modeloUsado = model;
+        break;
+      } catch (err: any) {
+        ultimoError = err;
+        console.warn(`Verificación con ${model} no disponible o fallida, probando el siguiente modelo...`);
       }
-    });
-
-    const textResult = response.text;
-    if (!textResult) throw new Error("Sin respuesta estructurada en la verificación.");
-    const segunda = JSON.parse(textResult.trim());
+    }
+    if (!segunda) throw ultimoError || new Error("Ningún modelo de verificación disponible.");
 
     // Solo comparamos los campos donde un error tiene consecuencias reales.
     const camposCriticos = ["iban", "importe", "cliente_nif", "cliente_nombre", "modelo", "periodo", "ejercicio", "tipo_resultado"];
@@ -445,7 +463,7 @@ app.post("/api/gemini/verify-tax", async (req, res) => {
       }
     }
 
-    return res.json({ coincide: discrepancias.length === 0, discrepancias, segunda });
+    return res.json({ coincide: discrepancias.length === 0, discrepancias, segunda, modeloVerificacion: modeloUsado });
   } catch (error: any) {
     console.error("Error en la verificación con segunda lectura:", error);
     // La verificación es una red de seguridad: si falla (cuota, red...), no

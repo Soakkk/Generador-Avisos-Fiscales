@@ -10,7 +10,7 @@ La aplicación es un software de escritorio y web diseñado para **asesorías y 
 
 ### Características Clave:
 1. **Flujo de Portapapeles Automático**: El usuario puede pulsar la tecla `Impr Pant` (o hacer una captura de pantalla) en su programa de gestión fiscal (como A3, Sage, la Sede Electrónica de la AEAT, etc.) y pulsar `Ctrl+V` (o el botón de pegar) en la aplicación.
-2. **Lectura con IA mediante Gemini 3.5 Flash**: La aplicación procesa la captura de pantalla de forma segura a nivel de servidor, extrayendo campos clave como:
+2. **Lectura con IA mediante Gemini 2.5 Flash** (se descartó 3.5-flash porque se colgaba de forma sistemática en las llamadas con imagen): La aplicación procesa la captura de pantalla de forma segura a nivel de servidor, extrayendo campos clave como:
    - Número de Modelo (ej. 303, 111, 115, 130, 200, 202, etc.)
    - Nombre o concepto del impuesto.
    - Periodo o trimestre (ej. 1T, 2T, 3T, 4T, 01, 10, etc.)
@@ -32,7 +32,7 @@ La aplicación es un software de escritorio y web diseñado para **asesorías y 
 
 El proyecto está estructurado como una aplicación **Full-Stack (Vite React + Express)** lista para compilarse como aplicación nativa de escritorio de Windows mediante **Electron**:
 
-- `/server.ts`: Servidor backend Express que se comunica con la API oficial de Google GenAI (`@google/genai` v2) utilizando el modelo `gemini-3.5-flash` con esquemas de respuesta JSON estrictos (`responseSchema`).
+- `/server.ts`: Servidor backend Express que se comunica con la API oficial de Google GenAI (`@google/genai` v2). La lectura principal usa `gemini-2.5-flash` y la segunda lectura de verificación usa un modelo DISTINTO (`gemini-2.0-flash`, con fallback a `gemini-2.5-flash-lite` y `gemini-2.5-flash`) para que el contraste sea independiente. Ambas con esquemas de respuesta JSON estrictos (`responseSchema`). Además, `/src/validation.ts` valida IBAN (mod-97) y NIF/NIE/CIF (letra de control) de forma determinista, sin IA.
 - `/main-electron.cjs`: Archivo principal de entrada de Electron. Levanta el servidor Express interno localmente de fondo (puerto 3000) de forma segura y abre una ventana nativa de escritorio.
 - `/src/types.ts`: Contiene las interfaces TypeScript del sistema (`TaxNotice`, `JointNotice`) y la función principal de cálculo de plazos de la AEAT (`calculateAEATDeadlines`) que gestiona el desplazamiento de fines de semana.
 - `/src/App.tsx`: Interfaz de usuario interactiva y refinada basada en Tailwind CSS, con área activa de arrastrar/soltar imágenes y control global de eventos de pegado (`paste`).

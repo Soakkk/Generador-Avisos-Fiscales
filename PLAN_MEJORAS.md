@@ -166,6 +166,19 @@ Se va rellenando conforme se completa cada punto:
 - **Probar la cuota de Gemini con la doble lectura activada**: cada captura pasa a
   consumir 2 llamadas; si la cuota gratuita se queda corta, hacer la segunda lectura
   opcional (interruptor en Ajustes).
+- **Segunda IA de otro proveedor (contraste externo)** — v1.1.1 ya usa un modelo
+  DISTINTO de Gemini para la verificación (`gemini-2.0-flash`, misma clave, gratis),
+  que elimina el sesgo de "el mismo modelo repite el mismo error". Si se quiere un
+  contraste de otro proveedor totalmente independiente, opciones gratuitas valoradas:
+  - **Groq** (llama con visión, cuota gratuita generosa) — requeriría que el usuario
+    cree una segunda clave gratis en console.groq.com y un campo nuevo en Ajustes.
+  - **OpenRouter** (agrega varios modelos con franja gratuita) — igual: clave propia.
+  - **OCR local con tesseract.js** (sin ninguna clave, funciona offline): comprobar
+    que el IBAN/importe/NIF que dice Gemini aparecen literalmente en el texto OCR de
+    la captura. Sin cuotas, pero puede dar falsos avisos en capturas con tablas.
+  Decisión pendiente del usuario: solo merece la pena si tras usar v1.1.1 sigue
+  colándose algún error que el checksum + doble modelo no detecten (lo esperable es
+  que no: el IBAN/NIF quedan cubiertos por checksum y el importe por los dos modelos).
 
 ## Cómo publicar una versión nueva (recordatorio)
 
