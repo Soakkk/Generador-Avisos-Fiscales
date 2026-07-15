@@ -43,8 +43,11 @@ const TAX_NAMES: Record<string, string> = {
   '200': 'Sociedades', '202': 'Sociedades',
   '190': 'Retenciones anual', '180': 'Retenciones anual', '347': 'Operaciones terceros',
 };
+// Nombre corto del impuesto. Devuelve '' cuando no hay uno bueno y corto: en el
+// desglose al lado ya se lee "Modelo 600", así que repetirlo ("Modelo 600 ·
+// Modelo 600") sobra. Para el titular de la ficha se usa el fallback de abajo.
 const shortTaxName = (modelo: string, nombre: string) =>
-  TAX_NAMES[modelo] || (nombre && nombre.length <= 16 ? nombre : `Modelo ${modelo}`);
+  TAX_NAMES[modelo] || (nombre && nombre.length <= 16 ? nombre : '');
 
 const periodoLabel = (p: string) => {
   const t: Record<string, string> = { '1T': '1.er trimestre', '2T': '2.º trimestre', '3T': '3.er trimestre', '4T': '4.º trimestre' };
@@ -106,7 +109,9 @@ export const NoticeCard: React.FC<NoticeCardProps> = ({ notice, format }) => {
   })();
 
   const chip = single ? `Modelo ${single.modelo}` : `${notice.notices.length} impuestos`;
-  const taxBig = single ? shortTaxName(single.modelo, single.modelo_nombre) : 'Resumen de impuestos';
+  const taxBig = single
+    ? shortTaxName(single.modelo, single.modelo_nombre) || `Modelo ${single.modelo}`
+    : 'Resumen de impuestos';
   const periodoText = `${periodoLabel(first?.periodo || '')} ${first?.ejercicio || ''}`.trim();
   const amountLabel = single
     ? (notice.todosDomiciliados ? 'Importe domiciliado' : res.label === 'A compensar' ? 'Saldo a compensar' : res.label === 'A devolver' ? 'Importe a devolver' : res.label === 'Sin actividad' ? 'Importe' : 'Importe a ingresar')
@@ -175,17 +180,30 @@ export const NoticeCard: React.FC<NoticeCardProps> = ({ notice, format }) => {
     </>
   );
 
+  // El desglose solo sale cuando hay 2 o más impuestos.
+  //
+  // Cuidado al tocar el ancho de estas filas: html-to-image (el que genera la
+  // imagen para WhatsApp) rehace la maqueta copiando el ancho YA CALCULADO de
+  // cada caja, redondeado a una décima de píxel. Si una caja se ajusta al texto
+  // (ancho = el del contenido), ese redondeo la deja unas milésimas corta y el
+  // texto salta de línea SOLO en la imagen: se veía "Modelo 303" y "IVA" debajo,
+  // pisando la fila siguiente, aunque en pantalla estaba perfecto.
+  // Por eso el texto ocupa el hueco libre (flex: 1) en vez de ajustarse a su
+  // contenido, y modelo + nombre van en una unidad que no se puede partir.
   const Desglose = () => (
     <div style={{ fontSize: 13 }}>
-      {notice.notices.map((tax) => (
-        <div key={tax.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 10, padding: '6px 0', borderTop: `1px solid ${ROW}` }}>
-          <span style={{ color: INK, minWidth: 0, overflowWrap: 'break-word' }}>
-            <span style={{ fontWeight: 700 }}>Modelo {tax.modelo}</span>
-            <span style={{ color: LABEL }}> · {shortTaxName(tax.modelo, tax.modelo_nombre)}</span>
-          </span>
-          <span style={{ fontFamily: SERIF, whiteSpace: 'nowrap', flexShrink: 0 }}>{euro(tax.importe)}</span>
-        </div>
-      ))}
+      {notice.notices.map((tax) => {
+        const nombre = shortTaxName(tax.modelo, tax.modelo_nombre);
+        return (
+          <div key={tax.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 10, padding: '6px 0', borderTop: `1px solid ${ROW}` }}>
+            <span style={{ color: INK, flex: 1, minWidth: 0, whiteSpace: 'nowrap' }}>
+              <span style={{ fontWeight: 700 }}>Modelo {tax.modelo}</span>
+              {nombre && <span style={{ color: LABEL }}> · {nombre}</span>}
+            </span>
+            <span style={{ fontFamily: SERIF, whiteSpace: 'nowrap', flexShrink: 0 }}>{euro(tax.importe)}</span>
+          </div>
+        );
+      })}
     </div>
   );
 
@@ -213,7 +231,7 @@ export const NoticeCard: React.FC<NoticeCardProps> = ({ notice, format }) => {
     notice.todosDomiciliados ? (
       <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start', marginTop: 11, background: NOTE_BG, border: `1px solid ${ROW}`, borderRadius: 10, padding: '9px 12px' }}>
         <Info size={14} color={NAVY} style={{ marginTop: 1, flexShrink: 0 }} />
-        <span style={{ fontSize: 11.5, color: '#6B6456', lineHeight: 1.45 }}>
+        <span style={{ fontSize: 11.5, color: '#6B6456', lineHeight: 1.45, flex: 1, minWidth: 0 }}>
           Por favor, revise que el número de cuenta es correcto y autorícenos a domiciliar el cargo en ella.
         </span>
       </div>
@@ -222,8 +240,11 @@ export const NoticeCard: React.FC<NoticeCardProps> = ({ notice, format }) => {
   const StatusLine = () => (
     <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8, background: res.bg, border: `1px solid ${res.bd}`, borderRadius: 10, padding: '10px 13px' }}>
       <span style={{ width: 8, height: 8, borderRadius: '50%', background: res.dot, flexShrink: 0, marginTop: 4 }} />
-      <span style={{ fontSize: 13, color: res.c, lineHeight: 1.4 }}>
-        <span style={{ fontWeight: 700 }}>{res.label}</span> — {res.shortMsg}
+      {/* flex: 1 -> el texto ocupa el hueco libre y no se ajusta a su propio
+          ancho; si no, al exportar cabía una línea menos y la última se salía
+          fuera del recuadro de color (ver nota en Desglose). */}
+      <span style={{ fontSize: 13, color: res.c, lineHeight: 1.4, flex: 1, minWidth: 0 }}>
+        <span style={{ fontWeight: 700, whiteSpace: 'nowrap' }}>{res.label}</span> — {res.shortMsg}
       </span>
     </div>
   );
@@ -232,8 +253,8 @@ export const NoticeCard: React.FC<NoticeCardProps> = ({ notice, format }) => {
   const BodyA = () => (
     <>
       <div style={{ background: res.bg, border: `1px solid ${res.bd}`, borderRadius: 12, padding: '13px 15px', margin: '13px 0', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12 }}>
-        <div style={{ minWidth: 0 }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 7, color: res.c, fontSize: 15, fontWeight: 700 }}>
+        <div style={{ minWidth: 0, flex: 1 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 7, color: res.c, fontSize: 15, fontWeight: 700, whiteSpace: 'nowrap' }}>
             <span style={{ width: 8, height: 8, borderRadius: '50%', background: res.dot, flexShrink: 0 }} />
             {res.label}
           </div>
@@ -267,20 +288,29 @@ export const NoticeCard: React.FC<NoticeCardProps> = ({ notice, format }) => {
       <div style={{ textAlign: 'center', padding: '14px 0 10px' }}>
         <div style={{ fontSize: 12, color: LABEL, letterSpacing: '0.04em' }}>{amountLabel}</div>
         <div style={{ fontFamily: SERIF, fontSize: fitAmount(36), color: NAVY, lineHeight: 1.05, margin: '5px 0 9px', whiteSpace: 'nowrap' }}>{totalAmount}</div>
-        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 7, color: res.c, fontSize: 14, fontWeight: 700, background: res.bg, border: `1px solid ${res.bd}`, padding: '4px 12px', borderRadius: 999 }}>
-          <span style={{ width: 8, height: 8, borderRadius: '50%', background: res.dot }} />
+        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 7, color: res.c, fontSize: 14, fontWeight: 700, background: res.bg, border: `1px solid ${res.bd}`, padding: '4px 12px', borderRadius: 999, whiteSpace: 'nowrap' }}>
+          <span style={{ width: 8, height: 8, borderRadius: '50%', background: res.dot, flexShrink: 0 }} />
           {res.label}
         </span>
       </div>
       {!single && (
         <div style={{ fontSize: 12.5, color: '#6B6456', padding: '10px 0', borderTop: `1px solid ${ROW}`, textAlign: 'center', lineHeight: 1.7 }}>
-          {notice.notices.map((tax, i) => (
-            <span key={tax.id}>
-              {i > 0 && <span style={{ color: '#D6CFC0' }}>&nbsp;&nbsp;|&nbsp;&nbsp;</span>}
-              <span style={{ fontWeight: 700, color: INK }}>{tax.modelo}</span>{' '}
-              {shortTaxName(tax.modelo, tax.modelo_nombre)} · {euro(tax.importe).replace(' €', '')}
-            </span>
-          ))}
+          {notice.notices.map((tax, i) => {
+            const nombre = shortTaxName(tax.modelo, tax.modelo_nombre);
+            return (
+              // Cada impuesto es una unidad que no se parte (whiteSpace: nowrap):
+              // antes la línea podía cortarse entre el modelo y su nombre y
+              // quedaba "115" arriba y "Alquileres" abajo. El corte solo puede
+              // caer en el espacio normal que va detrás de la barra separadora.
+              <React.Fragment key={tax.id}>
+                {i > 0 && <span style={{ color: '#D6CFC0' }}>{'  |  '}</span>}
+                <span style={{ whiteSpace: 'nowrap' }}>
+                  <span style={{ fontWeight: 700, color: INK }}>{tax.modelo}</span>
+                  {nombre ? ` ${nombre}` : ''} · {euro(tax.importe).replace(' €', '')}
+                </span>
+              </React.Fragment>
+            );
+          })}
         </div>
       )}
       {(res.dateLabel || (res.iban && notice.iban)) && (
