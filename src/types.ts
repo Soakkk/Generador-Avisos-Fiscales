@@ -39,6 +39,10 @@ export interface TaxNotice {
   fechaPresentacion?: string;
   timestamp: number;
   verificacion?: NoticeVerification;
+  /** Nota manual opcional que solo se muestra al pie de la imagen exportada. */
+  notaAsesoria?: string;
+  /** Desactivada por defecto para conservar intacto el diseno actual. */
+  mostrarNotaAsesoria?: boolean;
 }
 
 export interface JointNotice {
@@ -49,6 +53,8 @@ export interface JointNotice {
   total_importe: number;
   iban?: string;
   todosDomiciliados: boolean;
+  notaAsesoria?: string;
+  mostrarNotaAsesoria?: boolean;
 }
 
 // Function to calculate AEAT Spanish Tax Deadlines and Direct Debit Cutoffs

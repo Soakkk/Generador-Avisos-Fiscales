@@ -64,6 +64,7 @@ export const NoticeCard: React.FC<NoticeCardProps> = ({ notice, format }) => {
   const single = notice.notices.length === 1 ? notice.notices[0] : null;
   const first = notice.notices[0];
   const totalAmount = euro(Math.abs(notice.total_importe));
+  const manualNote = notice.mostrarNotaAsesoria ? notice.notaAsesoria?.trim() : '';
 
   // Una devolución es SOLO aquella en la que la AEAT ingresa el dinero al
   // cliente. Que el total salga negativo no basta: un 130 negativo o un IVA a
@@ -274,6 +275,23 @@ export const NoticeCard: React.FC<NoticeCardProps> = ({ notice, format }) => {
       </div>
     ) : null;
 
+  // Pie manual independiente de la nota fija de domiciliacion. Si esta apagado,
+  // no se renderiza nada y la tarjeta original conserva su diseno y tamano.
+  const NotaAsesoria = () =>
+    manualNote ? (
+      <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start', borderTop: `1px solid ${ROW}`, background: NOTE_BG, padding: '10px 20px 12px' }}>
+        <Info size={13} color={NAVY} style={{ marginTop: 2, flexShrink: 0 }} />
+        <div style={{ minWidth: 0, flex: 1 }}>
+          <div style={{ fontSize: 9.5, fontWeight: 700, letterSpacing: '0.06em', color: NAVY, textTransform: 'uppercase', marginBottom: 2 }}>
+            {'Nota de la asesor\u00eda'}
+          </div>
+          <div style={{ fontSize: 11.5, color: '#5C564A', lineHeight: 1.4, whiteSpace: 'pre-wrap', overflowWrap: 'break-word' }}>
+            {manualNote}
+          </div>
+        </div>
+      </div>
+    ) : null;
+
   const StatusLine = () => (
     <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8, background: res.bg, border: `1px solid ${res.bd}`, borderRadius: 10, padding: '10px 13px' }}>
       <span style={{ width: 8, height: 8, borderRadius: '50%', background: res.dot, flexShrink: 0, marginTop: 4 }} />
@@ -408,6 +426,8 @@ export const NoticeCard: React.FC<NoticeCardProps> = ({ notice, format }) => {
           {format === 'B' && <BodyB />}
           {format === 'C' && <BodyC />}
         </div>
+        <NotaAsesoria />
+
       </div>
 
       {/* ===== Botones ===== */}

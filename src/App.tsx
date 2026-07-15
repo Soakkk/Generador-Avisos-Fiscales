@@ -407,6 +407,9 @@ export default function App() {
       const total_importe = taxes.reduce((sum, tax) => sum + tax.importe, 0);
       const iban = taxes.find((tax) => tax.iban)?.iban || '';
       const todosDomiciliados = taxes.every((tax) => tax.tipo_resultado === 'Domiciliación');
+      const noteSource = taxes.find((tax) => tax.mostrarNotaAsesoria)
+        || taxes.find((tax) => tax.notaAsesoria?.trim());
+
 
       jointNotices.push({
         id: key,
@@ -415,7 +418,9 @@ export default function App() {
         notices: taxes,
         total_importe,
         iban,
-        todosDomiciliados
+        todosDomiciliados,
+        notaAsesoria: noteSource?.notaAsesoria || '',
+        mostrarNotaAsesoria: noteSource?.mostrarNotaAsesoria || false
       });
     });
 
@@ -424,6 +429,16 @@ export default function App() {
 
   const groupedNotices = getGroupedNotices(rawNotices);
 
+
+  const handleAdvisoryNoteChange = (jointId: string, enabled: boolean, text: string) => {
+    const cleanText = text.slice(0, 240);
+    const updated = rawNotices.map((notice) =>
+      normalizeNifKey(notice.cliente_nif, notice.cliente_nombre) === jointId
+        ? { ...notice, mostrarNotaAsesoria: enabled, notaAsesoria: cleanText }
+        : notice
+    );
+    saveNoticesToLocal(updated);
+  };
   // Cómo se nombra cada resultado de cara al cliente: "Resultado negativo" es el
   // valor interno, pero en el aviso queda mejor "Negativa".
   const RESULTADO_CLIENTE: Record<string, string> = {
@@ -1058,6 +1073,32 @@ export default function App() {
                         </div>
                       ) : (
                         <div className="flex flex-col items-center">
+                          <div className="w-full max-w-xl mb-4 rounded-xl border border-slate-200 bg-slate-50/70 p-3">
+                            <label className="flex items-center gap-2 text-xs font-bold text-slate-700 cursor-pointer">
+                              <input
+                                type="checkbox"
+                                checked={!!joint.mostrarNotaAsesoria}
+                                onChange={(e) => handleAdvisoryNoteChange(joint.id, e.target.checked, joint.notaAsesoria || '')}
+                                className="w-4 h-4 accent-slate-800"
+                              />
+                              <span>{'A\u00f1adir nota manual al pie de la imagen'}</span>
+                            </label>
+                            {joint.mostrarNotaAsesoria && (
+                              <div className="mt-2">
+                                <textarea
+                                  value={joint.notaAsesoria || ''}
+                                  onChange={(e) => handleAdvisoryNoteChange(joint.id, true, e.target.value)}
+                                  maxLength={240}
+                                  rows={3}
+                                  placeholder="Ej.: Recuerde enviarnos el justificante una vez realizado el pago."
+                                  className="w-full resize-y rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs text-slate-700 focus:border-slate-400 focus:outline-none"
+                                />
+                                <div className="mt-1 text-right text-[10px] text-slate-400">
+                                  {(joint.notaAsesoria || '').length}/240
+                                </div>
+                              </div>
+                            )}
+                          </div>
                           <NoticeCard
                             notice={joint}
                             format={cardFormat}
